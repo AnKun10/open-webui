@@ -67,7 +67,8 @@ tmux new -d -s controller "\
     --host 127.0.0.1 --port 21001 \
   2>&1 | tee '$LOGS/controller.log'"
 
-sleep 3
+# Wait until the controller is actually accepting HTTP requests.
+until curl -sf http://127.0.0.1:21001/list_models >/dev/null 2>&1; do sleep 1; done
 
 tmux kill-session -t worker 2>/dev/null || true
 tmux new -d -s worker "\
