@@ -57,3 +57,28 @@ if [ ! -x "$WEBUI_VENV/bin/open-webui" ]; then
 else
   echo "[stage 3] skipped — Open WebUI venv already exists"
 fi
+
+# ============================================================================
+# Stage 4 — controller (21001) + FUSION model_worker (21002)
+# ============================================================================
+tmux kill-session -t controller 2>/dev/null || true
+tmux new -d -s controller "\
+  '$SYS_PY' -m fastchat.serve.controller \
+    --host 127.0.0.1 --port 21001 \
+  2>&1 | tee '$LOGS/controller.log'"
+
+sleep 3
+
+tmux kill-session -t worker 2>/dev/null || true
+tmux new -d -s worker "\
+  ATTN_IMPLEMENTATION=sdpa \
+  HF_HOME='$HF_HOME' \
+  '$SYS_PY' -m fusion.serve.model_worker \
+    --host 127.0.0.1 --port 21002 \
+    --controller http://127.0.0.1:21001 \
+    --worker http://127.0.0.1:21002 \
+    --model-path starriver030515/FUSION-LLaMA3.1-8B \
+    --model-name fusion-llama3-8b \
+  2>&1 | tee '$LOGS/worker.log'"
+
+echo "[stage 4] controller + worker launched"
