@@ -42,3 +42,18 @@ if ! "$SYS_PY" -c "import fusion" 2>/dev/null; then
 else
   echo "[stage 2] skipped — FUSION already installed"
 fi
+
+# ============================================================================
+# Stage 3 — Open WebUI venv (isolated from system Python)
+# Idempotent: skips if the `open-webui` binary already exists.
+# ============================================================================
+if [ ! -x "$WEBUI_VENV/bin/open-webui" ]; then
+  echo "[stage 3] creating Open WebUI venv …"
+  mkdir -p "$(dirname "$WEBUI_VENV")"
+  "$SYS_PY" -m venv "$WEBUI_VENV"
+  "$WEBUI_VENV/bin/pip" install --quiet --upgrade pip
+  "$WEBUI_VENV/bin/pip" install --quiet open-webui
+  echo "[stage 3] Open WebUI venv ready"
+else
+  echo "[stage 3] skipped — Open WebUI venv already exists"
+fi
