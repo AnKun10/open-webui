@@ -99,3 +99,22 @@ tmux new -d -s api "\
   2>&1 | tee '$LOGS/api.log'"
 
 echo "[stage 5] OpenAI API adapter scheduled"
+
+# ============================================================================
+# Stage 6 — Open WebUI (3000)
+# Waits for the OpenAI adapter to expose the model, then launches.
+# ============================================================================
+tmux kill-session -t webui 2>/dev/null || true
+tmux new -d -s webui "\
+  until curl -sf http://127.0.0.1:8000/v1/models | grep -q fusion-llama3-8b; do \
+    echo 'waiting for API adapter to list model …'; sleep 5; \
+  done; \
+  ENABLE_BASE_MODELS_CACHE=false \
+  OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 \
+  OPENAI_API_KEY=sk-dummy \
+  WEBUI_AUTH=True \
+  '$WEBUI_VENV/bin/open-webui' serve --host 127.0.0.1 --port 3000 \
+  2>&1 | tee '$LOGS/webui.log'"
+
+echo "[stage 6] Open WebUI scheduled"
+echo "[done] startup sequence kicked off — check 'tmux ls' and tail logs in $LOGS/"
