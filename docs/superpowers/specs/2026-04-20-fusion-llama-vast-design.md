@@ -132,7 +132,8 @@ fi
 tmux new -d -s controller "$SYS_PY -m fastchat.serve.controller \
   --host 127.0.0.1 --port 21001 2>&1 | tee /workspace/logs/controller.log"
 
-sleep 3
+# Wait until the controller is actually accepting HTTP requests.
+until curl -sf http://127.0.0.1:21001/list_models >/dev/null 2>&1; do sleep 1; done
 
 tmux new -d -s worker "\
   ATTN_IMPLEMENTATION=sdpa \
@@ -211,7 +212,7 @@ Then on the laptop: open `http://localhost:3000`.
 | 2 | `transformers` version conflict with Open WebUI     | Two separate Python envs; HTTP-only interface.                                       |
 | 3 | FastChat's OpenAI adapter may not forward images    | Smoke-test text first; if image path fails, add a ~30-LOC FastAPI shim at `/workspace/patches/vision_forward.py`. |
 | 4 | `fschat` pulls conflicting transformers             | `pip install fschat --no-deps`, then install transitive deps explicitly.             |
-| 5 | Worker registers before controller is up            | `sleep 3` between stages; `until curl -sf` guards on the API and WebUI starts.       |
+| 5 | Worker registers before controller is up            | `until curl -sf` poll on `/list_models` between stages; same guard on the API and WebUI starts. |
 | 6 | Container rebuild wipes HF cache → re-download 20GB | Accepted (user chose no persistence); filter Vast for `Inet Down ≥ 500 Mbps`.        |
 
 **Fallback if Open WebUI image pipeline is broken:** launch

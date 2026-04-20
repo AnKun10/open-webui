@@ -244,7 +244,7 @@ git commit -m "startup: stage 3 — isolated Open WebUI venv"
 **Files:**
 - Modify: `vast-templates/fusion-llama3-8b/startup.sh` (append Stage 4 block)
 
-`ATTN_IMPLEMENTATION=sdpa` forces PyTorch SDPA (no flash-attn dependency). The `sleep 3` after launching the controller lets its HTTP server bind before the worker tries to register.
+`ATTN_IMPLEMENTATION=sdpa` forces PyTorch SDPA (no flash-attn dependency). After launching the controller, an `until curl -sf .../list_models` poll lets its HTTP server bind before the worker tries to register.
 
 - [ ] **Step 1: Append Stage 4 to `startup.sh`**
 
@@ -259,7 +259,8 @@ tmux new -d -s controller "\
     --host 127.0.0.1 --port 21001 \
   2>&1 | tee '$LOGS/controller.log'"
 
-sleep 3
+# Wait until the controller is actually accepting HTTP requests.
+until curl -sf http://127.0.0.1:21001/list_models >/dev/null 2>&1; do sleep 1; done
 
 tmux kill-session -t worker 2>/dev/null || true
 tmux new -d -s worker "\
