@@ -82,3 +82,20 @@ tmux new -d -s worker "\
   2>&1 | tee '$LOGS/worker.log'"
 
 echo "[stage 4] controller + worker launched"
+
+# ============================================================================
+# Stage 5 — FastChat OpenAI-compatible API server (8000)
+# Waits until the worker has registered the model, not just until the
+# controller is up.
+# ============================================================================
+tmux kill-session -t api 2>/dev/null || true
+tmux new -d -s api "\
+  until curl -sf http://127.0.0.1:21001/list_models | grep -q fusion-llama3-8b; do \
+    echo 'waiting for worker to register …'; sleep 5; \
+  done; \
+  '$SYS_PY' -m fastchat.serve.openai_api_server \
+    --controller-address http://127.0.0.1:21001 \
+    --host 127.0.0.1 --port 8000 \
+  2>&1 | tee '$LOGS/api.log'"
+
+echo "[stage 5] OpenAI API adapter scheduled"
