@@ -148,17 +148,21 @@ tmux new -d -s worker "\
 ### Stage 5 — OpenAI-compatible API
 ```bash
 tmux new -d -s api "\
-  until curl -sf http://127.0.0.1:21001/list_models >/dev/null; do sleep 5; done; \
+  until curl -sf http://127.0.0.1:21001/list_models | grep -q fusion-llama3-8b; do sleep 5; done; \
   $SYS_PY -m fastchat.serve.openai_api_server \
     --controller-address http://127.0.0.1:21001 \
     --host 127.0.0.1 --port 8000 \
   2>&1 | tee /workspace/logs/api.log"
 ```
+The guard waits until the worker has **registered with the controller under
+its model name**, i.e. weights are loaded and the worker is ready. A bare
+`curl -sf` on `/list_models` returns 200 with an empty list while the worker
+is still downloading, so we must grep for the model name.
 
 ### Stage 6 — Open WebUI
 ```bash
 tmux new -d -s webui "\
-  until curl -sf http://127.0.0.1:8000/v1/models >/dev/null; do sleep 5; done; \
+  until curl -sf http://127.0.0.1:8000/v1/models | grep -q fusion-llama3-8b; do sleep 5; done; \
   ENABLE_BASE_MODELS_CACHE=false \
   OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 \
   OPENAI_API_KEY=sk-dummy \
@@ -166,6 +170,7 @@ tmux new -d -s webui "\
   $WEBUI_VENV/bin/open-webui serve --host 127.0.0.1 --port 3000 \
   2>&1 | tee /workspace/logs/webui.log"
 ```
+Same reasoning as Stage 5 — guard on the model name, not just HTTP 200.
 
 ## 6. Ports & SSH Tunnel
 
