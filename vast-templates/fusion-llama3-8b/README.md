@@ -55,8 +55,13 @@ tmux ls
 tail -f /workspace/logs/worker.log
 # wait for: Uvicorn running on http://127.0.0.1:21002
 
-# 3. When worker is ready, run the smoke test
-bash /workspace/path/to/smoke-test.sh   # copy smoke-test.sh onto the instance
+# 3. When worker is ready, run the smoke test.
+#    First, copy smoke-test.sh onto the instance from your laptop
+#    (open a second local terminal):
+#      scp -P <VAST_SSH_PORT> vast-templates/fusion-llama3-8b/smoke-test.sh \
+#          root@<VAST_HOST>:/workspace/
+#    Then, back on the instance:
+bash /workspace/smoke-test.sh
 # expected: ALL CHECKS PASSED
 ```
 
@@ -73,7 +78,7 @@ Container rebuilds wipe `/workspace`, so weights re-download on every new instan
 3. Sign up an admin account on first boot.
 4. In the model dropdown, pick `fusion-llama3-8b`.
 5. Send a text message to confirm the pipeline is alive.
-6. (Optional) Upload a small image. If Open WebUI can pass it through to the model, the vision pipeline works end-to-end. If the model responds with garbage or an error, apply the "vision shim" mitigation from the spec (see Risks §7).
+6. (Optional) Upload a small image. If Open WebUI can pass it through to the model, the vision pipeline works end-to-end. If the model responds with garbage or an error, apply the "vision shim" mitigation from the spec (see [§7 Risks & mitigations](../../docs/superpowers/specs/2026-04-20-fusion-llama-vast-design.md#7-risks--mitigations)).
 
 ## Debugging cheatsheet
 
