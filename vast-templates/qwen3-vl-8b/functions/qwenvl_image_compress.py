@@ -5,11 +5,14 @@ Source of truth lives in the repo at vast-templates/qwen3-vl-8b/functions/.
 """
 
 import asyncio
+import base64
+import hashlib
 import os
 import time
 from typing import Iterator, Optional
 
 import aiosqlite
+import httpx
 
 VERSION = "0.1.0-dev"
 
@@ -139,3 +142,29 @@ def text_of(msg: dict) -> str:
             if part.get("type") == "text":
                 return part.get("text") or ""
     return ""
+
+
+async def hash_image_url(url: str, fetch_base: str,
+                         fetch_timeout_s: int = 10) -> tuple[str, bytes]:
+    """Return (sha256_hex, raw_bytes) for an image_url part.
+
+    Supports data: URLs, absolute http(s) URLs, and relative paths
+    (resolved against fetch_base, e.g. http://127.0.0.1:3000)."""
+    if url.startswith("data:"):
+        if "," not in url:
+            raise ValueError("malformed data URL")
+        raw = base64.b64decode(url.split(",", 1)[1])
+    elif url.startswith(("http://", "https://")):
+        async with httpx.AsyncClient(timeout=fetch_timeout_s) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+            raw = r.content
+    elif url.startswith("/"):
+        full = f"{fetch_base.rstrip('/')}{url}"
+        async with httpx.AsyncClient(timeout=fetch_timeout_s) as client:
+            r = await client.get(full)
+            r.raise_for_status()
+            raw = r.content
+    else:
+        raise ValueError(f"Unsupported image URL scheme: {url[:32]!r}")
+    return hashlib.sha256(raw).hexdigest(), raw

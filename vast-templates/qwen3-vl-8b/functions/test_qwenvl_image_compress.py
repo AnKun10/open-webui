@@ -1,4 +1,8 @@
+import base64
+import hashlib
 import pytest
+import respx
+import httpx
 import qwenvl_image_compress as mod
 from qwenvl_image_compress import (
     CaptionCache,
@@ -6,6 +10,7 @@ from qwenvl_image_compress import (
     find_latest_image_turn,
     has_images,
     text_of,
+    hash_image_url,
 )
 
 
@@ -149,3 +154,46 @@ class TestImageScan:
             {"type": "image_url", "image_url": {}},
         ]}
         assert not has_images(m)
+
+
+class TestHashImage:
+    async def test_data_url_hashes_raw_bytes(self):
+        payload = b"\x89PNG\r\nfake"
+        b64 = base64.b64encode(payload).decode()
+        url = f"data:image/png;base64,{b64}"
+        h, raw = await hash_image_url(url, fetch_base="http://localhost:0")
+        assert h == hashlib.sha256(payload).hexdigest()
+        assert raw == payload
+
+    async def test_invalid_scheme_raises(self):
+        with pytest.raises(ValueError):
+            await hash_image_url("file:///etc/passwd", fetch_base="http://localhost:0")
+
+    @respx.mock
+    async def test_relative_url_fetches_from_base(self):
+        payload = b"\xff\xd8\xff\xe0fake_jpeg"
+        respx.get("http://127.0.0.1:3000/api/v1/files/abc/content").respond(
+            200, content=payload
+        )
+        h, raw = await hash_image_url(
+            "/api/v1/files/abc/content",
+            fetch_base="http://127.0.0.1:3000",
+        )
+        assert h == hashlib.sha256(payload).hexdigest()
+        assert raw == payload
+
+    @respx.mock
+    async def test_absolute_http_url_fetched_directly(self):
+        payload = b"data"
+        respx.get("https://cdn.example.com/img.png").respond(200, content=payload)
+        h, raw = await hash_image_url(
+            "https://cdn.example.com/img.png",
+            fetch_base="http://ignored",
+        )
+        assert h == hashlib.sha256(payload).hexdigest()
+
+    @respx.mock
+    async def test_http_404_raises(self):
+        respx.get("http://127.0.0.1:3000/missing").respond(404)
+        with pytest.raises(httpx.HTTPStatusError):
+            await hash_image_url("/missing", fetch_base="http://127.0.0.1:3000")
