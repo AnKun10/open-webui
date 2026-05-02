@@ -132,3 +132,20 @@ class TestImageScan:
         u, _ = make_image()
         m = {"role": "user", "content": [{"type": "image_url", "image_url": {"url": u}}]}
         assert text_of(m) == ""
+
+    def test_text_of_returns_empty_string_when_text_is_none(self):
+        m = {"role": "user", "content": [{"type": "text", "text": None}]}
+        assert text_of(m) == ""
+
+    def test_has_images_false_for_empty_url(self):
+        m = {"role": "user", "content": [
+            {"type": "text", "text": "x"},
+            {"type": "image_url", "image_url": {"url": ""}},
+        ]}
+        assert not has_images(m)
+
+    def test_has_images_false_for_missing_url_key(self):
+        m = {"role": "user", "content": [
+            {"type": "image_url", "image_url": {}},
+        ]}
+        assert not has_images(m)

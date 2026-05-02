@@ -97,11 +97,14 @@ class CaptionCache:
 
 
 def has_images(msg: dict) -> bool:
-    """Check if a message contains any image_url parts."""
+    """Check if a message contains any image_url parts with non-empty URLs."""
     content = msg.get("content")
     if not isinstance(content, list):
         return False
-    return any(p.get("type") == "image_url" for p in content)
+    return any(
+        p.get("type") == "image_url" and p.get("image_url", {}).get("url")
+        for p in content
+    )
 
 
 def iter_image_parts(msgs: list[dict]) -> Iterator[tuple[int, int, str]]:
@@ -134,5 +137,5 @@ def text_of(msg: dict) -> str:
     if isinstance(content, list):
         for part in content:
             if part.get("type") == "text":
-                return part.get("text", "")
+                return part.get("text") or ""
     return ""
