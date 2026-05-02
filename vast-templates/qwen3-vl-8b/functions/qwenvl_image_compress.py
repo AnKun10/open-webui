@@ -452,3 +452,88 @@ class Filter:
             self._cache = CaptionCache(self.valves.cache_db_path)
             await self._cache.init()
         return self._cache
+
+    async def inlet(self, body: dict, __user__: Optional[dict] = None,
+                    __metadata__: Optional[dict] = None,
+                    __event_emitter__=None) -> dict:
+        try:
+            return await self._inlet_impl(body, __user__, __metadata__, __event_emitter__)
+        except Exception as e:
+            log.exception("ImageCompressor passthrough due to error: %s", e)
+            return body
+
+    async def _inlet_impl(self, body, __user__, __metadata__, __event_emitter__) -> dict:
+        msgs = body.get("messages") or []
+        if not msgs:
+            return body
+
+        user_valves_raw = (__user__ or {}).get("valves")
+        user_valves = (
+            user_valves_raw if isinstance(user_valves_raw, self.UserValves)
+            else self.UserValves(**(user_valves_raw or {}))
+        )
+        if not user_valves.enabled:
+            return body
+
+        last = msgs[-1] if msgs[-1].get("role") == "user" else None
+        if last is None:
+            return body
+
+        # Step A: scan
+        url_list = list(iter_image_parts(msgs))
+        if not url_list:
+            return body
+
+        cache = await self._ensure_cache()
+
+        # Step B: hash + ensure captions
+        scanned: list[tuple[int, int, str, str, bytes]] = []
+        for msg_idx, c_idx, url in url_list:
+            try:
+                h, raw = await hash_image_url(
+                    url, self.valves.webui_internal_base,
+                )
+                scanned.append((msg_idx, c_idx, url, h, raw))
+            except Exception as e:
+                log.warning("hash skipped url=%s err=%s", url[:60], e)
+
+        captions_by_url = await ensure_captions(
+            scanned=scanned,
+            cache=cache,
+            base_url=self.valves.vllm_base_url,
+            api_key=self.valves.vllm_api_key,
+            model=self.valves.caption_model,
+            max_tokens=self.valves.caption_max_tokens,
+            timeout_s=self.valves.caption_timeout_s,
+            user_id=(__user__ or {}).get("id"),
+        )
+
+        # Step C: classify
+        if user_valves.force_keep_all_images:
+            return body
+
+        if has_images(last):
+            keep_idx = len(msgs) - 1
+        else:
+            latest_idx = find_latest_image_turn(msgs)
+            if latest_idx is None:
+                return body
+            captions_for_router = [
+                captions_by_url.get(url, "(no caption)")
+                for (mi, _, url, _, _) in scanned if mi == latest_idx
+            ]
+            decision, _reason = await route(
+                user_text=text_of(last),
+                captions=captions_for_router,
+                base_url=self.valves.vllm_base_url,
+                api_key=self.valves.vllm_api_key,
+                model=self.valves.router_model,
+                max_tokens=self.valves.router_max_tokens,
+                timeout_s=self.valves.router_timeout_s,
+                failopen_keep=self.valves.router_failopen_keep,
+            )
+            keep_idx = latest_idx if decision else None
+
+        # Step D: rewrite
+        body["messages"] = rewrite_messages(msgs, keep_idx, captions_by_url)
+        return body

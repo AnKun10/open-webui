@@ -491,3 +491,51 @@ class TestFilterValves:
         f.valves = Filter.Valves(caption_max_tokens=120, priority=1)
         assert f.valves.caption_max_tokens == 120
         assert f.valves.priority == 1
+
+
+class TestInletFreshUpload:
+    @respx.mock
+    async def test_first_upload_three_images_no_strip(
+        self, cache_db_path, multimodal_msg, make_image
+    ):
+        u1, _ = make_image(b"a"); u2, _ = make_image(b"b"); u3, _ = make_image(b"c")
+        respx.post("http://vllm/v1/chat/completions").respond(
+            200, json={"choices": [{"message": {"content": "cap"}}]},
+        )
+        f = Filter()
+        f.valves = Filter.Valves(
+            vllm_base_url="http://vllm/v1",
+            cache_db_path=cache_db_path,
+        )
+        body = {"messages": [multimodal_msg("look", [u1, u2, u3])]}
+        out = await f.inlet(body=body, __user__={"id": "u1"}, __metadata__={"chat_id": "c1"})
+        # all 3 images preserved at last (and only) turn
+        n_images = sum(
+            1 for p in out["messages"][0]["content"] if p.get("type") == "image_url"
+        )
+        assert n_images == 3
+
+    @respx.mock
+    async def test_new_upload_strips_prior_turn(
+        self, cache_db_path, text_msg, multimodal_msg, make_image
+    ):
+        u_old, _ = make_image(b"old"); u_new, _ = make_image(b"new")
+        respx.post("http://vllm/v1/chat/completions").respond(
+            200, json={"choices": [{"message": {"content": "x cap"}}]},
+        )
+        f = Filter()
+        f.valves = Filter.Valves(
+            vllm_base_url="http://vllm/v1", cache_db_path=cache_db_path,
+        )
+        body = {"messages": [
+            multimodal_msg("first", [u_old]),
+            text_msg("ok", role="assistant"),
+            multimodal_msg("now this", [u_new]),
+        ]}
+        out = await f.inlet(body=body, __user__={"id": "u1"}, __metadata__={"chat_id": "c1"})
+        # first user turn: image stripped
+        first_imgs = [p for p in out["messages"][0]["content"] if p.get("type") == "image_url"]
+        assert first_imgs == []
+        # last user turn: image preserved
+        last_imgs = [p for p in out["messages"][2]["content"] if p.get("type") == "image_url"]
+        assert len(last_imgs) == 1
