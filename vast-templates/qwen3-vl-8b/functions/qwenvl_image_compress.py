@@ -16,6 +16,7 @@ from typing import Iterator, Optional
 
 import aiosqlite
 import httpx
+from pydantic import BaseModel, Field
 
 VERSION = "0.1.0-dev"
 
@@ -418,3 +419,36 @@ async def ensure_captions(scanned: list[tuple[int, int, str, str, bytes]],
         await cache.put_many(new_rows)
 
     return out
+
+
+class Filter:
+    class Valves(BaseModel):
+        vllm_base_url: str = Field(default="http://127.0.0.1:8000/v1")
+        vllm_api_key: str = Field(default="sk-dummy")
+        caption_model: str = Field(default="qwen3-vl-8b")
+        router_model: str = Field(default="qwen3-vl-8b")
+        cache_db_path: str = Field(default="/workspace/openwebui-data/img_captions.db")
+        webui_internal_base: str = Field(default="http://127.0.0.1:3000")
+        caption_max_tokens: int = Field(default=80)
+        router_max_tokens: int = Field(default=60)
+        caption_timeout_s: int = Field(default=30)
+        router_timeout_s: int = Field(default=15)
+        router_failopen_keep: bool = Field(default=True)
+        priority: int = Field(default=5)
+
+    class UserValves(BaseModel):
+        enabled: bool = Field(default=True)
+        force_keep_all_images: bool = Field(default=False)
+        show_thinking_log: bool = Field(default=True)
+        show_live_status: bool = Field(default=True)
+
+    def __init__(self) -> None:
+        self.valves = self.Valves()
+        self.toggle = True
+        self._cache: Optional[CaptionCache] = None
+
+    async def _ensure_cache(self) -> CaptionCache:
+        if self._cache is None:
+            self._cache = CaptionCache(self.valves.cache_db_path)
+            await self._cache.init()
+        return self._cache

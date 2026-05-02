@@ -14,6 +14,7 @@ from qwenvl_image_compress import (
     caption_one,
     route,
     ensure_captions,
+    Filter,
     CAPTION_SYSTEM_PROMPT,
     ROUTER_SYSTEM_PROMPT,
 )
@@ -466,3 +467,27 @@ class TestEnsureCaptions:
         )
         assert result.get(u_ok) == "ok caption"
         assert u_bad not in result   # failure → url omitted
+
+
+class TestFilterValves:
+    def test_valves_defaults(self):
+        f = Filter()
+        assert f.valves.vllm_base_url == "http://127.0.0.1:8000/v1"
+        assert f.valves.caption_model == "qwen3-vl-8b"
+        assert f.valves.router_failopen_keep is True
+        assert f.valves.priority == 5
+        assert f.toggle is True
+
+    def test_user_valves_defaults(self):
+        f = Filter()
+        uv = f.UserValves()
+        assert uv.enabled is True
+        assert uv.force_keep_all_images is False
+        assert uv.show_thinking_log is True
+        assert uv.show_live_status is True
+
+    def test_valves_overridable(self):
+        f = Filter()
+        f.valves = Filter.Valves(caption_max_tokens=120, priority=1)
+        assert f.valves.caption_max_tokens == 120
+        assert f.valves.priority == 1
