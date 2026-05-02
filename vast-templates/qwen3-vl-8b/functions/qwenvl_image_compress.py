@@ -529,6 +529,7 @@ class Filter:
             return body
 
     async def _inlet_impl(self, body, __user__, __metadata__, __event_emitter__) -> dict:
+        start = time.monotonic()
         msgs = body.get("messages") or []
         if not msgs:
             return body
@@ -594,6 +595,16 @@ class Filter:
                 decision_label, captions_by_url, user_text_for_log,
                 route_reason, tokens_saved,
             )
+            log.info(_json.dumps({
+                "event": "image_compress_inlet",
+                "chat_id": (__metadata__ or {}).get("chat_id"),
+                "n_images": len(scanned),
+                "cache_hits": len(scanned) - len(misses),
+                "cache_misses": len(misses),
+                "decision": "force_keep",
+                "tokens_saved": tokens_saved,
+                "latency_ms": int((time.monotonic() - start) * 1000),
+            }))
             return body
 
         if has_images(last):
@@ -650,4 +661,14 @@ class Filter:
             decision_label, captions_by_url, user_text_for_log,
             route_reason, tokens_saved,
         )
+        log.info(_json.dumps({
+            "event": "image_compress_inlet",
+            "chat_id": (__metadata__ or {}).get("chat_id"),
+            "n_images": len(scanned),
+            "cache_hits": len(scanned) - len(misses),
+            "cache_misses": len(misses),
+            "decision": "keep" if keep_idx is not None else "drop",
+            "tokens_saved": tokens_saved,
+            "latency_ms": int((time.monotonic() - start) * 1000),
+        }))
         return body

@@ -1,6 +1,7 @@
 import base64
 import copy
 import hashlib
+import json as _json_test
 import pytest
 import respx
 import httpx
@@ -801,3 +802,34 @@ class TestThinkingLog:
         )
         msg_events = [e for e in events if e.get("type") == "message"]
         assert msg_events == []
+
+
+class TestStructuredLog:
+    @respx.mock
+    async def test_logs_inlet_summary(
+        self, caplog, cache_db_path, multimodal_msg, make_image
+    ):
+        import logging
+        u, _ = make_image()
+        respx.post("http://vllm/v1/chat/completions").respond(
+            200, json={"choices": [{"message": {"content": "c"}}]},
+        )
+        f = Filter()
+        f.valves = Filter.Valves(vllm_base_url="http://vllm/v1", cache_db_path=cache_db_path)
+        body = {"messages": [multimodal_msg("a", [u])]}
+        with caplog.at_level(logging.INFO, logger="qwenvl_image_compress"):
+            await f.inlet(
+                body=body, __user__={"id": "u"},
+                __metadata__={"chat_id": "chat-1"},
+            )
+        summaries = [
+            r.message for r in caplog.records
+            if r.name == "qwenvl_image_compress" and r.message.startswith("{")
+        ]
+        assert summaries
+        payload = _json_test.loads(summaries[-1])
+        assert payload["event"] == "image_compress_inlet"
+        assert payload["chat_id"] == "chat-1"
+        assert payload["n_images"] >= 1
+        assert "decision" in payload
+        assert "latency_ms" in payload
