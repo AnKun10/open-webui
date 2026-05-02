@@ -8,6 +8,8 @@ import asyncio
 import base64
 import copy
 import hashlib
+import json as _json
+import logging
 import os
 import time
 from typing import Iterator, Optional
@@ -16,6 +18,8 @@ import aiosqlite
 import httpx
 
 VERSION = "0.1.0-dev"
+
+log = logging.getLogger("qwenvl_image_compress")
 
 CAPTION_SYSTEM_PROMPT = """\
 Bạn là image captioner. Mô tả ảnh trong 1-2 câu khách quan, không quá 60 từ.
@@ -27,6 +31,30 @@ KHÔNG suy diễn cảm xúc, KHÔNG khen chê, KHÔNG bịa chi tiết.
 Trả về DUY NHẤT phần caption, không prefix \"Caption:\" hay markdown."""
 
 CAPTION_USER_TEXT = "Mô tả ảnh này."
+
+ROUTER_SYSTEM_PROMPT = """\
+Bạn là router cho 1 hệ thống chat đa phương thức.
+Cho 1 câu hỏi text-only của user và mô tả các ảnh user đã upload trước đó,
+quyết định xem có cần gửi PIXEL của các ảnh đó cho LLM trả lời không.
+
+Trả LLM cần nhìn pixel khi:
+  - Câu hỏi tham chiếu trực tiếp ảnh: \"ảnh đó\", \"cái này\", \"hình thứ N\", \"trên màn hình\".
+  - Câu hỏi đòi visual detail: màu, vị trí, đếm, OCR chính xác, so sánh ảnh.
+  - Câu hỏi tiếp tục chủ đề liên quan đến nội dung ảnh.
+
+Trả LLM KHÔNG cần pixel khi:
+  - Câu hỏi đổi sang chủ đề mới không liên quan ảnh.
+  - Câu hỏi tổng quát không có đại từ chỉ ảnh và caption đã đủ context.
+
+Output DUY NHẤT 1 JSON object, không markdown:
+  {\"need_images\": true|false, \"reason\": \"<1 câu ngắn tiếng Việt>\"}"""
+
+ROUTER_USER_TEMPLATE = (
+    "Ảnh đã upload trước đó (theo thứ tự):\n"
+    "{captions_block}\n\n"
+    "Câu hỏi mới của user:\n"
+    "\"\"\"\n{user_text}\n\"\"\"\n"
+)
 
 
 class CaptionCache:
@@ -262,3 +290,62 @@ async def caption_one(data_url: str,
         r.raise_for_status()
         data = r.json()
     return data["choices"][0]["message"]["content"].strip()
+
+
+async def route(user_text: str,
+                captions: list[str],
+                base_url: str,
+                api_key: str,
+                model: str,
+                max_tokens: int,
+                timeout_s: int,
+                failopen_keep: bool) -> tuple[bool, str]:
+    """Call vLLM to decide whether images are needed for the user's question.
+
+    Args:
+        user_text: User's text-only message.
+        captions: List of image captions (in order).
+        base_url: vLLM base URL (e.g., "http://vllm/v1").
+        api_key: Authorization bearer token.
+        model: Model name (e.g., "qwen3-vl-8b").
+        max_tokens: Max response tokens.
+        timeout_s: HTTP request timeout in seconds.
+        failopen_keep: If True, return (True, reason) on error; else (False, reason).
+
+    Returns:
+        (decision, reason) where decision is True if images are needed.
+
+    Raises:
+        Nothing — errors are caught and handled per failopen_keep.
+    """
+    captions_block = "\n".join(f"{i+1}. {c}" for i, c in enumerate(captions))
+    user_content = ROUTER_USER_TEMPLATE.format(
+        captions_block=captions_block, user_text=user_text,
+    )
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": 0.0,
+        "response_format": {"type": "json_object"},
+        "stream": False,
+    }
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            r = await client.post(
+                f"{base_url.rstrip('/')}/chat/completions",
+                json=payload, headers=headers,
+            )
+            r.raise_for_status()
+            raw = r.json()["choices"][0]["message"]["content"]
+        parsed = _json.loads(raw)
+        decision = bool(parsed.get("need_images"))
+        reason = str(parsed.get("reason", ""))[:200]
+        return decision, reason
+    except (httpx.HTTPError, _json.JSONDecodeError, KeyError, ValueError) as e:
+        log.warning("router call failed: %s; failopen_keep=%s", e, failopen_keep)
+        return failopen_keep, f"router failure: {type(e).__name__}"

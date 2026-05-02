@@ -12,7 +12,9 @@ from qwenvl_image_compress import (
     text_of,
     hash_image_url,
     caption_one,
+    route,
     CAPTION_SYSTEM_PROMPT,
+    ROUTER_SYSTEM_PROMPT,
 )
 
 
@@ -317,3 +319,95 @@ class TestCaptionOne:
         respx.post("http://vllm/v1/chat/completions").respond(500)
         with pytest.raises(httpx.HTTPStatusError):
             await caption_one(url, "http://vllm/v1", "sk-x", "qwen3-vl-8b", 80, 10)
+
+
+class TestRoute:
+    @respx.mock
+    async def test_route_yes(self):
+        respx.post("http://vllm/v1/chat/completions").respond(
+            200,
+            json={"choices": [{"message": {
+                "content": '{"need_images": true, "reason": "user nói \\"ảnh thứ 2\\""}'
+            }}]},
+        )
+        decision, reason = await route(
+            user_text="ảnh thứ 2 màu gì?",
+            captions=["a cat", "a dog"],
+            base_url="http://vllm/v1",
+            api_key="sk-x",
+            model="qwen3-vl-8b",
+            max_tokens=60,
+            timeout_s=5,
+            failopen_keep=True,
+        )
+        assert decision is True
+        assert "ảnh" in reason
+
+    @respx.mock
+    async def test_route_no(self):
+        respx.post("http://vllm/v1/chat/completions").respond(
+            200,
+            json={"choices": [{"message": {
+                "content": '{"need_images": false, "reason": "đổi chủ đề"}'
+            }}]},
+        )
+        decision, reason = await route(
+            "explain decorators", ["a cat"],
+            "http://vllm/v1", "sk-x", "qwen3-vl-8b", 60, 5, failopen_keep=True,
+        )
+        assert decision is False
+        assert reason == "đổi chủ đề"
+
+    @respx.mock
+    async def test_route_invalid_json_failopen_keep(self):
+        respx.post("http://vllm/v1/chat/completions").respond(
+            200, json={"choices": [{"message": {"content": "not json at all"}}]},
+        )
+        decision, reason = await route(
+            "x", ["c"], "http://vllm/v1", "sk-x", "qwen3-vl-8b",
+            60, 5, failopen_keep=True,
+        )
+        assert decision is True
+        assert "fail" in reason.lower() or "invalid" in reason.lower()
+
+    @respx.mock
+    async def test_route_invalid_json_failopen_drop(self):
+        respx.post("http://vllm/v1/chat/completions").respond(
+            200, json={"choices": [{"message": {"content": "not json"}}]},
+        )
+        decision, reason = await route(
+            "x", ["c"], "http://vllm/v1", "sk-x", "qwen3-vl-8b",
+            60, 5, failopen_keep=False,
+        )
+        assert decision is False
+
+    @respx.mock
+    async def test_route_http_error_failopen_keep(self):
+        respx.post("http://vllm/v1/chat/completions").respond(500)
+        decision, reason = await route(
+            "x", ["c"], "http://vllm/v1", "sk-x", "qwen3-vl-8b",
+            60, 5, failopen_keep=True,
+        )
+        assert decision is True
+
+    @respx.mock
+    async def test_route_request_shape(self):
+        route_mock = respx.post("http://vllm/v1/chat/completions").respond(
+            200, json={"choices": [{"message": {
+                "content": '{"need_images": true, "reason": "x"}'
+            }}]},
+        )
+        await route(
+            "u msg", ["c1", "c2"], "http://vllm/v1", "sk-x", "qwen3-vl-8b",
+            60, 5, failopen_keep=True,
+        )
+        import json as J
+        payload = J.loads(route_mock.calls[0].request.read())
+        assert payload["temperature"] == 0.0
+        assert payload["response_format"] == {"type": "json_object"}
+        assert ROUTER_SYSTEM_PROMPT.strip() in payload["messages"][0]["content"]
+        # captions block + user message must be in user content
+        user_content = payload["messages"][1]["content"]
+        assert "1. c1" in user_content
+        assert "2. c2" in user_content
+        assert "u msg" in user_content
