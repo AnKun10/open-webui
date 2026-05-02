@@ -70,3 +70,27 @@ class CaptionCache:
                 (h, caption, model, now_ms, bytes_size, user_id),
             )
             await db.commit()
+
+    async def get_many(self, hashes: list[str]) -> dict[str, str]:
+        if not hashes:
+            return {}
+        placeholders = ",".join("?" * len(hashes))
+        async with aiosqlite.connect(self.path) as db:
+            sql = f"SELECT img_hash, caption FROM captions WHERE img_hash IN ({placeholders})"
+            async with db.execute(sql, hashes) as cur:
+                return {h: c async for h, c in cur}
+
+    async def put_many(self, items: list[tuple[str, str, str, Optional[int], Optional[str]]]) -> None:
+        """items: (hash, caption, model, bytes_size, user_id)."""
+        if not items:
+            return
+        now_ms = int(time.time() * 1000)
+        rows = [(h, c, m, now_ms, sz, uid) for h, c, m, sz, uid in items]
+        async with aiosqlite.connect(self.path) as db:
+            await db.executemany(
+                "INSERT OR IGNORE INTO captions"
+                "(img_hash, caption, model, created_at, bytes_size, user_id)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            await db.commit()
