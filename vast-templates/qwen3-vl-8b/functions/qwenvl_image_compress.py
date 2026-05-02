@@ -18,7 +18,7 @@ import aiosqlite
 import httpx
 from pydantic import BaseModel, Field
 
-VERSION = "0.1.0-dev"
+VERSION = "0.1.0"
 
 log = logging.getLogger("qwenvl_image_compress")
 
