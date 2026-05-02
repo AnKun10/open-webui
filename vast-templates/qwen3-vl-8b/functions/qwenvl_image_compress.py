@@ -154,6 +154,8 @@ async def hash_image_url(url: str, fetch_base: str,
         if "," not in url:
             raise ValueError("malformed data URL")
         raw = base64.b64decode(url.split(",", 1)[1])
+        if not raw:
+            raise ValueError("data URL payload is empty")
     elif url.startswith(("http://", "https://")):
         async with httpx.AsyncClient(timeout=fetch_timeout_s) as client:
             r = await client.get(url)

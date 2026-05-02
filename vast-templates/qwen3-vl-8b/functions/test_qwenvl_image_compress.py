@@ -197,3 +197,7 @@ class TestHashImage:
         respx.get("http://127.0.0.1:3000/missing").respond(404)
         with pytest.raises(httpx.HTTPStatusError):
             await hash_image_url("/missing", fetch_base="http://127.0.0.1:3000")
+
+    async def test_data_url_empty_payload_raises(self):
+        with pytest.raises(ValueError, match="empty"):
+            await hash_image_url("data:image/png;base64,", fetch_base="http://x")
