@@ -639,3 +639,39 @@ class TestInletUserValves:
         # Image still present at turn 0 (no strip)
         first = out["messages"][0]
         assert any(p.get("type") == "image_url" for p in first["content"])
+
+
+class TestInletErrorGuard:
+    async def test_uncaught_exception_returns_body_unchanged(self, monkeypatch):
+        f = Filter()
+
+        async def boom(*a, **kw):
+            raise RuntimeError("simulated")
+
+        monkeypatch.setattr(f, "_inlet_impl", boom)
+        body = {"messages": [{"role": "user", "content": "hi"}]}
+        before = copy.deepcopy(body)
+        out = await f.inlet(body=body, __user__={"id": "u"}, __metadata__={})
+        assert out == before
+
+    @respx.mock
+    async def test_vllm_unreachable_passes_through(
+        self, cache_db_path, multimodal_msg, make_image
+    ):
+        u, _ = make_image()
+        # No respx route → ConnectError on caption call.
+        f = Filter()
+        f.valves = Filter.Valves(
+            vllm_base_url="http://nonexistent.invalid/v1",
+            cache_db_path=cache_db_path,
+            caption_timeout_s=1,
+        )
+        body = {"messages": [multimodal_msg("a", [u])]}
+        out = await f.inlet(
+            body=body, __user__={"id": "u"}, __metadata__={"chat_id": "c"},
+        )
+        # Caption failed → image not stripped (no caption to substitute,
+        # and last turn anyway). Body should still have the image.
+        assert any(
+            p.get("type") == "image_url" for p in out["messages"][0]["content"]
+        )
