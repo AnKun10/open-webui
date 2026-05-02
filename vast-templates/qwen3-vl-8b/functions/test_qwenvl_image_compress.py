@@ -724,7 +724,7 @@ class TestStatusEvents:
             body=body, __user__={"id": "u"}, __metadata__={"chat_id": "c"},
             __event_emitter__=emit,
         )
-        descriptions = [e["data"]["description"] for e in events]
+        descriptions = [e["data"]["description"] for e in events if e.get("type") == "status"]
         assert any("Routing" in d for d in descriptions)
         assert any("drop" in d for d in descriptions)
 
@@ -746,3 +746,58 @@ class TestStatusEvents:
             __event_emitter__=emit,
         )
         assert events == []
+
+
+class TestThinkingLog:
+    @respx.mock
+    async def test_thinking_log_emitted_after_inlet(
+        self, cache_db_path, text_msg, multimodal_msg, make_image
+    ):
+        u, h = make_image()
+        c = CaptionCache(cache_db_path); await c.init()
+        await c.put(h, "a screenshot", "qwen3-vl-8b")
+        respx.post("http://vllm/v1/chat/completions").respond(
+            200, json={"choices": [{"message": {
+                "content": '{"need_images": false, "reason": "topic shift"}'
+            }}]},
+        )
+        events = []
+        async def emit(ev): events.append(ev)
+        f = Filter()
+        f.valves = Filter.Valves(vllm_base_url="http://vllm/v1", cache_db_path=cache_db_path)
+        body = {"messages": [
+            multimodal_msg("a", [u]),
+            text_msg("y", role="assistant"),
+            text_msg("explain decorators"),
+        ]}
+        await f.inlet(
+            body=body, __user__={"id": "u"}, __metadata__={"chat_id": "c"},
+            __event_emitter__=emit,
+        )
+        msg_events = [e for e in events if e.get("type") == "message"]
+        assert len(msg_events) == 1
+        content = msg_events[0]["data"]["content"]
+        assert "<details>" in content
+        assert "Image compressor reasoning" in content
+        # mentions decision and the caption text
+        assert "drop" in content.lower() or "router" in content.lower()
+        assert "a screenshot" in content
+
+    async def test_show_thinking_log_false_skips_block(
+        self, cache_db_path, text_msg, multimodal_msg, make_image
+    ):
+        u, h = make_image()
+        c = CaptionCache(cache_db_path); await c.init()
+        await c.put(h, "x", "qwen3-vl-8b")
+        events = []
+        async def emit(ev): events.append(ev)
+        f = Filter()
+        f.valves = Filter.Valves(cache_db_path=cache_db_path)
+        body = {"messages": [multimodal_msg("a", [u])]}
+        uv = Filter.UserValves(show_thinking_log=False)
+        await f.inlet(
+            body=body, __user__={"id": "u", "valves": uv},
+            __metadata__={"chat_id": "c"}, __event_emitter__=emit,
+        )
+        msg_events = [e for e in events if e.get("type") == "message"]
+        assert msg_events == []

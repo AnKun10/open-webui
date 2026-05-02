@@ -464,6 +464,61 @@ class Filter:
         except Exception as e:
             log.debug("status emit failed: %s", e)
 
+    def _build_thinking_log(self, *,
+                             n_images: int, n_misses: int, decision_label: str,
+                             captions_used: list[tuple[str, str]],
+                             user_text: Optional[str],
+                             route_reason: Optional[str],
+                             tokens_saved: int) -> str:
+        lines = ["<details>", f"<summary>🧠 Image compressor reasoning ({n_images} ảnh, {n_misses} caption mới, {decision_label})</summary>", ""]
+        lines.append("**Step 1 — Image scan**")
+        lines.append(f"- Tổng {n_images} ảnh; cache miss: {n_misses}, hit: {n_images - n_misses}")
+        lines.append("")
+        if captions_used:
+            lines.append("**Step 2 — Captions in use**")
+            for h_short, cap in captions_used:
+                lines.append(f"- `{h_short}` → \"{cap[:120]}\"")
+            lines.append("")
+        if user_text is not None:
+            lines.append("**Step 3 — Router**")
+            lines.append(f"- User: \"{user_text[:200]}\"")
+            lines.append(f"- {decision_label}")
+            if route_reason:
+                lines.append(f"- Reason: *{route_reason}*")
+            lines.append("")
+        lines.append("**Step 4 — Rewrite**")
+        if tokens_saved > 0:
+            lines.append(f"- Token estimate saved: ~{tokens_saved}")
+        else:
+            lines.append("- Images preserved; no tokens saved")
+        lines.append("</details>")
+        lines.append("")
+        return "\n".join(lines)
+
+    def _estimate_image_tokens(self, raw: bytes) -> int:
+        return max(800, len(raw) // 800)
+
+    async def _emit_thinking_log(self, emit, user_valves, scanned, misses,
+                                  decision_label, captions_by_url,
+                                  user_text, route_reason, tokens_saved) -> None:
+        if not (emit and user_valves.show_thinking_log):
+            return
+        captions_used = [
+            (h[:8], captions_by_url.get(url, "(no caption)"))
+            for (_, _, url, h, _) in scanned
+        ]
+        content = self._build_thinking_log(
+            n_images=len(scanned), n_misses=len(misses),
+            decision_label=decision_label,
+            captions_used=captions_used,
+            user_text=user_text, route_reason=route_reason,
+            tokens_saved=tokens_saved,
+        )
+        try:
+            await emit({"type": "message", "data": {"content": content}})
+        except Exception as e:
+            log.debug("thinking-log emit failed: %s", e)
+
     async def inlet(self, body: dict, __user__: Optional[dict] = None,
                     __metadata__: Optional[dict] = None,
                     __event_emitter__=None) -> dict:
@@ -504,10 +559,8 @@ class Filter:
             except Exception as e:
                 log.warning("hash skipped url=%s err=%s", url[:60], e)
 
-        # Decide what captions are missing (for status messaging)
         existing = await cache.get_many([h for *_, h, _ in scanned])
         misses = [s for s in scanned if s[3] not in existing]
-
         if misses:
             await self._emit_status(
                 __event_emitter__,
@@ -516,26 +569,35 @@ class Filter:
             )
 
         captions_by_url = await ensure_captions(
-            scanned=scanned,
-            cache=cache,
-            base_url=self.valves.vllm_base_url,
-            api_key=self.valves.vllm_api_key,
+            scanned=scanned, cache=cache,
+            base_url=self.valves.vllm_base_url, api_key=self.valves.vllm_api_key,
             model=self.valves.caption_model,
             max_tokens=self.valves.caption_max_tokens,
             timeout_s=self.valves.caption_timeout_s,
             user_id=(__user__ or {}).get("id"),
         )
 
+        decision_label: str
+        route_reason: Optional[str] = None
+        user_text_for_log: Optional[str] = None
+        tokens_saved = 0
+
         if user_valves.force_keep_all_images:
             await self._emit_status(
-                __event_emitter__,
-                "✅ Compressor done (force_keep_all_images)",
+                __event_emitter__, "✅ Compressor done (force_keep_all_images)",
                 done=True, allowed=user_valves.show_live_status,
+            )
+            decision_label = "force_keep_all_images"
+            keep_idx: Optional[int] = None  # body untouched, keep_idx unused
+            await self._emit_thinking_log(
+                __event_emitter__, user_valves, scanned, misses,
+                decision_label, captions_by_url, user_text_for_log,
+                route_reason, tokens_saved,
             )
             return body
 
         if has_images(last):
-            keep_idx: Optional[int] = len(msgs) - 1
+            keep_idx = len(msgs) - 1
             decision_label = "kept new upload"
         else:
             latest_idx = find_latest_image_turn(msgs)
@@ -550,10 +612,10 @@ class Filter:
                 captions_by_url.get(url, "(no caption)")
                 for (mi, _, url, _, _) in scanned if mi == latest_idx
             ]
-            decision, _reason = await route(
-                user_text=text_of(last), captions=captions_for_router,
-                base_url=self.valves.vllm_base_url,
-                api_key=self.valves.vllm_api_key,
+            user_text_for_log = text_of(last)
+            decision, route_reason = await route(
+                user_text=user_text_for_log, captions=captions_for_router,
+                base_url=self.valves.vllm_base_url, api_key=self.valves.vllm_api_key,
                 model=self.valves.router_model,
                 max_tokens=self.valves.router_max_tokens,
                 timeout_s=self.valves.router_timeout_s,
@@ -570,9 +632,22 @@ class Filter:
                 allowed=user_valves.show_live_status,
             )
 
+        if keep_idx is None:
+            tokens_saved = sum(self._estimate_image_tokens(raw) for *_, raw in scanned)
+        else:
+            tokens_saved = sum(
+                self._estimate_image_tokens(raw)
+                for (mi, _, _, _, raw) in scanned if mi != keep_idx
+            )
+
         body["messages"] = rewrite_messages(msgs, keep_idx, captions_by_url)
         await self._emit_status(
             __event_emitter__, "✅ Compressor done",
             done=True, allowed=user_valves.show_live_status,
+        )
+        await self._emit_thinking_log(
+            __event_emitter__, user_valves, scanned, misses,
+            decision_label, captions_by_url, user_text_for_log,
+            route_reason, tokens_saved,
         )
         return body
