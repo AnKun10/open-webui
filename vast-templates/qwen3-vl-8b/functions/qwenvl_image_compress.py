@@ -6,6 +6,7 @@ Source of truth lives in the repo at vast-templates/qwen3-vl-8b/functions/.
 
 import asyncio
 import base64
+import copy
 import hashlib
 import os
 import time
@@ -170,3 +171,37 @@ async def hash_image_url(url: str, fetch_base: str,
     else:
         raise ValueError(f"Unsupported image URL scheme: {url[:32]!r}")
     return hashlib.sha256(raw).hexdigest(), raw
+
+
+def rewrite_messages(msgs: list[dict],
+                     keep_idx: Optional[int],
+                     captions_by_url: dict[str, str]) -> list[dict]:
+    """Return a deep-copied messages list with images stripped at all turns
+    except `keep_idx`. Stripped images become `[Past image #N: <caption>]`
+    text parts appended at the end of the message's content."""
+    out = copy.deepcopy(msgs)
+    for i, msg in enumerate(out):
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        if i == keep_idx:
+            continue
+        new_parts: list[dict] = []
+        stripped_captions: list[str] = []
+        img_n = 0
+        for part in content:
+            if part.get("type") == "image_url":
+                img_n += 1
+                url = part.get("image_url", {}).get("url", "")
+                cap = captions_by_url.get(url) or "(no caption)"
+                stripped_captions.append(f"[Past image #{img_n}: {cap}]")
+            else:
+                new_parts.append(part)
+        if stripped_captions:
+            extra_text = "\n".join(stripped_captions)
+            if new_parts and new_parts[-1].get("type") == "text":
+                new_parts[-1]["text"] = new_parts[-1]["text"] + "\n" + extra_text
+            else:
+                new_parts.append({"type": "text", "text": extra_text})
+        msg["content"] = new_parts
+    return out

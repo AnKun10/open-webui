@@ -201,3 +201,60 @@ class TestHashImage:
     async def test_data_url_empty_payload_raises(self):
         with pytest.raises(ValueError, match="empty"):
             await hash_image_url("data:image/png;base64,", fetch_base="http://x")
+
+
+class TestRewriteMessages:
+    def _captions_for(self, urls):
+        return {url: f"cap[{i}]" for i, url in enumerate(urls)}
+
+    def test_keep_idx_preserves_target_turn(self, multimodal_msg, text_msg, make_image):
+        u, _ = make_image()
+        msgs = [
+            multimodal_msg("a", [u]),       # 0
+            text_msg("b", role="assistant"),
+            multimodal_msg("c", [u]),       # 2 — keep
+        ]
+        out = mod.rewrite_messages(msgs, keep_idx=2, captions_by_url=self._captions_for([u]))
+        # turn 2 unchanged
+        assert out[2] == msgs[2]
+        # turn 0 image stripped — check no image_url part remains
+        assert all(p.get("type") != "image_url" for p in out[0]["content"])
+        # caption present in text
+        text = next(p["text"] for p in out[0]["content"] if p["type"] == "text")
+        assert "cap[0]" in text
+
+    def test_keep_idx_none_strips_all(self, multimodal_msg, make_image):
+        u1, _ = make_image(b"a")
+        u2, _ = make_image(b"b")
+        msgs = [multimodal_msg("look", [u1, u2])]
+        out = mod.rewrite_messages(msgs, keep_idx=None, captions_by_url={u1: "A", u2: "B"})
+        text_parts = [p["text"] for p in out[0]["content"] if p["type"] == "text"]
+        assert all(p.get("type") != "image_url" for p in out[0]["content"])
+        assert any("A" in t for t in text_parts)
+        assert any("B" in t for t in text_parts)
+
+    def test_text_only_message_passthrough(self, text_msg):
+        msgs = [text_msg("hello")]
+        out = mod.rewrite_messages(msgs, keep_idx=None, captions_by_url={})
+        assert out == msgs
+
+    def test_role_unchanged(self, multimodal_msg, make_image):
+        u, _ = make_image()
+        msgs = [multimodal_msg("x", [u], role="user")]
+        out = mod.rewrite_messages(msgs, keep_idx=None, captions_by_url={u: "C"})
+        assert out[0]["role"] == "user"
+
+    def test_missing_caption_falls_back_to_placeholder(self, multimodal_msg, make_image):
+        u, _ = make_image()
+        msgs = [multimodal_msg("x", [u])]
+        out = mod.rewrite_messages(msgs, keep_idx=None, captions_by_url={})  # no caption
+        text_parts = [p["text"] for p in out[0]["content"] if p["type"] == "text"]
+        assert any("(no caption)" in t for t in text_parts)
+        assert all(p.get("type") != "image_url" for p in out[0]["content"])
+
+    def test_keep_idx_preserves_pixels_at_target(self, multimodal_msg, make_image):
+        u, _ = make_image()
+        msgs = [multimodal_msg("x", [u])]
+        out = mod.rewrite_messages(msgs, keep_idx=0, captions_by_url={u: "C"})
+        # image_url part must still exist at turn 0
+        assert any(p.get("type") == "image_url" for p in out[0]["content"])
