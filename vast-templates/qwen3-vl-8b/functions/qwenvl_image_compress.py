@@ -7,7 +7,7 @@ Source of truth lives in the repo at vast-templates/qwen3-vl-8b/functions/.
 import asyncio
 import os
 import time
-from typing import Optional
+from typing import Iterator, Optional
 
 import aiosqlite
 
@@ -94,3 +94,45 @@ class CaptionCache:
                 rows,
             )
             await db.commit()
+
+
+def has_images(msg: dict) -> bool:
+    """Check if a message contains any image_url parts."""
+    content = msg.get("content")
+    if not isinstance(content, list):
+        return False
+    return any(p.get("type") == "image_url" for p in content)
+
+
+def iter_image_parts(msgs: list[dict]) -> Iterator[tuple[int, int, str]]:
+    """Yield (msg_idx, content_idx, url) for every image_url part."""
+    for i, msg in enumerate(msgs):
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for j, part in enumerate(content):
+            if part.get("type") == "image_url":
+                url = part.get("image_url", {}).get("url", "")
+                if url:
+                    yield i, j, url
+
+
+def find_latest_image_turn(msgs: list[dict]) -> Optional[int]:
+    """Return the index of the latest user turn with images, or None."""
+    latest: Optional[int] = None
+    for i, msg in enumerate(msgs):
+        if msg.get("role") == "user" and has_images(msg):
+            latest = i
+    return latest
+
+
+def text_of(msg: dict) -> str:
+    """Extract text content from a message (string or multimodal)."""
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for part in content:
+            if part.get("type") == "text":
+                return part.get("text", "")
+    return ""

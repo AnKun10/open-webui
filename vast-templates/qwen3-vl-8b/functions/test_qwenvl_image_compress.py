@@ -1,6 +1,12 @@
 import pytest
 import qwenvl_image_compress as mod
-from qwenvl_image_compress import CaptionCache
+from qwenvl_image_compress import (
+    CaptionCache,
+    iter_image_parts,
+    find_latest_image_turn,
+    has_images,
+    text_of,
+)
 
 
 def test_module_imports():
@@ -63,3 +69,66 @@ class TestCaptionCacheBatch:
         await c.put_many([(h, "first", "qwen3-vl-8b", None, None)])
         await c.put_many([(h, "second", "qwen3-vl-8b", None, None)])
         assert await c.get(h) == "first"  # INSERT OR IGNORE preserves first
+
+
+class TestImageScan:
+    def test_text_only_message_has_no_images(self, text_msg):
+        assert not has_images(text_msg("hello"))
+
+    def test_multimodal_message_with_images(self, multimodal_msg, make_image):
+        url, _ = make_image()
+        m = multimodal_msg("what?", [url])
+        assert has_images(m)
+
+    def test_multimodal_message_text_only_part(self, multimodal_msg):
+        m = multimodal_msg("hello", [])
+        assert not has_images(m)
+
+    def test_iter_image_parts_yields_indices(self, multimodal_msg, make_image):
+        u1, _ = make_image(b"a")
+        u2, _ = make_image(b"b")
+        msgs = [
+            {"role": "system", "content": "you are helpful"},
+            multimodal_msg("look", [u1, u2]),
+        ]
+        parts = list(iter_image_parts(msgs))
+        # Each: (msg_idx, content_idx, url)
+        assert len(parts) == 2
+        assert parts[0] == (1, 1, u1)
+        assert parts[1] == (1, 2, u2)
+
+    def test_find_latest_image_turn_none_when_no_images(self, text_msg):
+        msgs = [text_msg("hi"), text_msg("yo", role="assistant"), text_msg("ok")]
+        assert find_latest_image_turn(msgs) is None
+
+    def test_find_latest_image_turn_returns_index(self, text_msg, multimodal_msg, make_image):
+        u, _ = make_image()
+        msgs = [
+            multimodal_msg("first", [u]),     # idx 0
+            text_msg("answer", role="assistant"),
+            text_msg("follow"),                # idx 2 — no images
+        ]
+        assert find_latest_image_turn(msgs) == 0
+
+    def test_find_latest_picks_most_recent(self, multimodal_msg, text_msg, make_image):
+        u1, _ = make_image(b"a")
+        u2, _ = make_image(b"b")
+        msgs = [
+            multimodal_msg("a", [u1]),                 # idx 0
+            text_msg("ok", role="assistant"),
+            multimodal_msg("b", [u2]),                 # idx 2
+        ]
+        assert find_latest_image_turn(msgs) == 2
+
+    def test_text_of_string_content(self, text_msg):
+        assert text_of(text_msg("hello world")) == "hello world"
+
+    def test_text_of_multimodal(self, multimodal_msg, make_image):
+        u, _ = make_image()
+        m = multimodal_msg("describe this", [u])
+        assert text_of(m) == "describe this"
+
+    def test_text_of_no_text_part(self, make_image):
+        u, _ = make_image()
+        m = {"role": "user", "content": [{"type": "image_url", "image_url": {"url": u}}]}
+        assert text_of(m) == ""
