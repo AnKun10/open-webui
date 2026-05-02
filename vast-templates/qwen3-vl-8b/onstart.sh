@@ -40,6 +40,9 @@ else
   echo "[2/4] open-webui venv exists, skip."
 fi
 
+# Always ensure filter deps are present (handles upgrade from prior onstart versions)
+"$WEBUI_VENV/bin/pip" install --no-cache-dir --quiet aiosqlite httpx
+
 # ---- 3. Start vLLM (port 8000) ----
 echo "[3/4] Starting vLLM..."
 tmux kill-session -t vllm 2>/dev/null || true

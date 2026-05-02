@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import copy
 import hashlib
@@ -833,3 +834,33 @@ class TestStructuredLog:
         assert payload["n_images"] >= 1
         assert "decision" in payload
         assert "latency_ms" in payload
+
+
+class TestEnsureCacheConcurrency:
+    async def test_ensure_cache_concurrent_first_calls_share_instance(self, cache_db_path):
+        f = Filter()
+        f.valves = Filter.Valves(cache_db_path=cache_db_path)
+        c1, c2 = await asyncio.gather(f._ensure_cache(), f._ensure_cache())
+        assert c1 is c2
+
+
+class TestInletEmptyScanned:
+    async def test_all_hash_fail_returns_body_unchanged(
+        self, cache_db_path, multimodal_msg, text_msg
+    ):
+        # Use an unsupported URL scheme so hash_image_url raises ValueError for every image.
+        bad_url_msg = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "look"},
+                {"type": "image_url", "image_url": {"url": "ftp://nope/x.png"}},
+            ],
+        }
+        f = Filter()
+        f.valves = Filter.Valves(cache_db_path=cache_db_path)
+        body = {"messages": [bad_url_msg, text_msg("ok", role="assistant"), text_msg("more")]}
+        before = copy.deepcopy(body)
+        out = await f.inlet(
+            body=body, __user__={"id": "u"}, __metadata__={"chat_id": "c"},
+        )
+        assert out == before  # unchanged because no images could be hashed

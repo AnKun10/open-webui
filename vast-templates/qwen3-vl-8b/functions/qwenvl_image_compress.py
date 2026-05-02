@@ -446,11 +446,13 @@ class Filter:
         self.valves = self.Valves()
         self.toggle = True
         self._cache: Optional[CaptionCache] = None
+        self._cache_lock = asyncio.Lock()
 
     async def _ensure_cache(self) -> CaptionCache:
-        if self._cache is None:
-            self._cache = CaptionCache(self.valves.cache_db_path)
-            await self._cache.init()
+        async with self._cache_lock:
+            if self._cache is None:
+                self._cache = CaptionCache(self.valves.cache_db_path)
+                await self._cache.init()
         return self._cache
 
     async def _emit_status(self, emit, description: str, *, done: bool = False,
@@ -559,6 +561,9 @@ class Filter:
                 scanned.append((msg_idx, c_idx, url, h, raw))
             except Exception as e:
                 log.warning("hash skipped url=%s err=%s", url[:60], e)
+
+        if not scanned:
+            return body
 
         existing = await cache.get_many([h for *_, h, _ in scanned])
         misses = [s for s in scanned if s[3] not in existing]
