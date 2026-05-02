@@ -11,6 +11,8 @@ from qwenvl_image_compress import (
     has_images,
     text_of,
     hash_image_url,
+    caption_one,
+    CAPTION_SYSTEM_PROMPT,
 )
 
 
@@ -258,3 +260,60 @@ class TestRewriteMessages:
         out = mod.rewrite_messages(msgs, keep_idx=0, captions_by_url={u: "C"})
         # image_url part must still exist at turn 0
         assert any(p.get("type") == "image_url" for p in out[0]["content"])
+
+
+class TestCaptionOne:
+    @respx.mock
+    async def test_caption_returns_content(self, make_image):
+        url, _ = make_image()
+        respx.post("http://vllm/v1/chat/completions").respond(
+            200,
+            json={"choices": [{"message": {"content": "  a cat sleeping  "}}]},
+        )
+        cap = await caption_one(
+            data_url=url,
+            base_url="http://vllm/v1",
+            api_key="sk-x",
+            model="qwen3-vl-8b",
+            max_tokens=80,
+            timeout_s=10,
+        )
+        assert cap == "a cat sleeping"
+
+    @respx.mock
+    async def test_caption_request_shape(self, make_image):
+        url, _ = make_image()
+        route = respx.post("http://vllm/v1/chat/completions").respond(
+            200, json={"choices": [{"message": {"content": "x"}}]}
+        )
+        await caption_one(url, "http://vllm/v1", "sk-x", "qwen3-vl-8b", 80, 10)
+
+        call = route.calls[0]
+        body = call.request.read()
+        import json as J
+        payload = J.loads(body)
+        assert payload["model"] == "qwen3-vl-8b"
+        assert payload["max_tokens"] == 80
+        assert payload["temperature"] == 0.2
+        assert payload["stream"] is False
+        # Two messages: system + user (text + image)
+        assert payload["messages"][0]["role"] == "system"
+        assert CAPTION_SYSTEM_PROMPT.strip() in payload["messages"][0]["content"]
+        user_content = payload["messages"][1]["content"]
+        assert any(p.get("type") == "image_url" for p in user_content)
+
+    @respx.mock
+    async def test_caption_empty_response_returns_empty(self, make_image):
+        url, _ = make_image()
+        respx.post("http://vllm/v1/chat/completions").respond(
+            200, json={"choices": [{"message": {"content": ""}}]}
+        )
+        cap = await caption_one(url, "http://vllm/v1", "sk-x", "qwen3-vl-8b", 80, 10)
+        assert cap == ""
+
+    @respx.mock
+    async def test_caption_http_error_raises(self, make_image):
+        url, _ = make_image()
+        respx.post("http://vllm/v1/chat/completions").respond(500)
+        with pytest.raises(httpx.HTTPStatusError):
+            await caption_one(url, "http://vllm/v1", "sk-x", "qwen3-vl-8b", 80, 10)

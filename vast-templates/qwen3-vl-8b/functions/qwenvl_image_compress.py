@@ -17,6 +17,17 @@ import httpx
 
 VERSION = "0.1.0-dev"
 
+CAPTION_SYSTEM_PROMPT = """\
+Bạn là image captioner. Mô tả ảnh trong 1-2 câu khách quan, không quá 60 từ.
+Cần nêu:
+  - Chủ thể chính (người/vật/cảnh).
+  - Văn bản nhìn thấy trong ảnh, copy nguyên văn nếu ngắn.
+  - Bố cục/màu sắc nổi bật nếu liên quan.
+KHÔNG suy diễn cảm xúc, KHÔNG khen chê, KHÔNG bịa chi tiết.
+Trả về DUY NHẤT phần caption, không prefix \"Caption:\" hay markdown."""
+
+CAPTION_USER_TEXT = "Mô tả ảnh này."
+
 
 class CaptionCache:
     SCHEMA = """
@@ -205,3 +216,49 @@ def rewrite_messages(msgs: list[dict],
                 new_parts.append({"type": "text", "text": extra_text})
         msg["content"] = new_parts
     return out
+
+
+async def caption_one(data_url: str,
+                      base_url: str,
+                      api_key: str,
+                      model: str,
+                      max_tokens: int,
+                      timeout_s: int) -> str:
+    """Call vLLM to caption a single image. Return trimmed caption text.
+
+    Args:
+        data_url: Image URL (data:, http://, https://, or relative path).
+        base_url: vLLM base URL (e.g., "http://vllm/v1").
+        api_key: Authorization bearer token.
+        model: Model name (e.g., "qwen3-vl-8b").
+        max_tokens: Max response tokens.
+        timeout_s: HTTP request timeout in seconds.
+
+    Returns:
+        Trimmed caption text.
+
+    Raises:
+        httpx.HTTPStatusError: If vLLM returns a non-2xx status.
+    """
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": CAPTION_SYSTEM_PROMPT},
+            {"role": "user", "content": [
+                {"type": "text", "text": CAPTION_USER_TEXT},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ]},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": 0.2,
+        "stream": False,
+    }
+    headers = {"Authorization": f"Bearer {api_key}"}
+    async with httpx.AsyncClient(timeout=timeout_s) as client:
+        r = await client.post(
+            f"{base_url.rstrip('/')}/chat/completions",
+            json=payload, headers=headers,
+        )
+        r.raise_for_status()
+        data = r.json()
+    return data["choices"][0]["message"]["content"].strip()
