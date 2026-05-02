@@ -539,3 +539,59 @@ class TestInletFreshUpload:
         # last user turn: image preserved
         last_imgs = [p for p in out["messages"][2]["content"] if p.get("type") == "image_url"]
         assert len(last_imgs) == 1
+
+
+class TestInletTextFollowup:
+    @respx.mock
+    async def test_text_followup_router_yes_keeps_images(
+        self, cache_db_path, text_msg, multimodal_msg, make_image
+    ):
+        u, h = make_image(b"img"); urls = [u]
+        # Pre-seed cache so caption call is not needed
+        c = CaptionCache(cache_db_path); await c.init()
+        await c.put(h, "a screenshot", "qwen3-vl-8b")
+        # Only one route registered: the router call
+        respx.post("http://vllm/v1/chat/completions").respond(
+            200,
+            json={"choices": [{"message": {
+                "content": '{"need_images": true, "reason": "user references image"}'
+            }}]},
+        )
+        f = Filter()
+        f.valves = Filter.Valves(vllm_base_url="http://vllm/v1", cache_db_path=cache_db_path)
+        body = {"messages": [
+            multimodal_msg("first", urls),                      # idx 0 — image
+            text_msg("ok", role="assistant"),
+            text_msg("ảnh này màu gì?"),                        # idx 2 — text only
+        ]}
+        out = await f.inlet(body=body, __user__={"id": "u"}, __metadata__={"chat_id": "c"})
+        # Image preserved at idx 0
+        first = out["messages"][0]
+        assert any(p.get("type") == "image_url" for p in first["content"])
+
+    @respx.mock
+    async def test_text_followup_router_no_strips_all(
+        self, cache_db_path, text_msg, multimodal_msg, make_image
+    ):
+        u, h = make_image(b"img")
+        c = CaptionCache(cache_db_path); await c.init()
+        await c.put(h, "a screenshot", "qwen3-vl-8b")
+        respx.post("http://vllm/v1/chat/completions").respond(
+            200,
+            json={"choices": [{"message": {
+                "content": '{"need_images": false, "reason": "topic shift"}'
+            }}]},
+        )
+        f = Filter()
+        f.valves = Filter.Valves(vllm_base_url="http://vllm/v1", cache_db_path=cache_db_path)
+        body = {"messages": [
+            multimodal_msg("first", [u]),
+            text_msg("ok", role="assistant"),
+            text_msg("explain Python decorators"),
+        ]}
+        out = await f.inlet(body=body, __user__={"id": "u"}, __metadata__={"chat_id": "c"})
+        first = out["messages"][0]
+        assert all(p.get("type") != "image_url" for p in first["content"])
+        # Caption substituted into text
+        text = next(p["text"] for p in first["content"] if p["type"] == "text")
+        assert "a screenshot" in text
