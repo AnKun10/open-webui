@@ -675,3 +675,74 @@ class TestInletErrorGuard:
         assert any(
             p.get("type") == "image_url" for p in out["messages"][0]["content"]
         )
+
+
+class TestStatusEvents:
+    @respx.mock
+    async def test_emits_caption_start_and_done(
+        self, cache_db_path, multimodal_msg, make_image
+    ):
+        u, _ = make_image()
+        respx.post("http://vllm/v1/chat/completions").respond(
+            200, json={"choices": [{"message": {"content": "c"}}]},
+        )
+        events: list[dict] = []
+        async def emit(ev): events.append(ev)
+
+        f = Filter()
+        f.valves = Filter.Valves(vllm_base_url="http://vllm/v1", cache_db_path=cache_db_path)
+        body = {"messages": [multimodal_msg("a", [u])]}
+        await f.inlet(
+            body=body, __user__={"id": "u"}, __metadata__={"chat_id": "c"},
+            __event_emitter__=emit,
+        )
+        descriptions = [e["data"]["description"] for e in events if e.get("type") == "status"]
+        assert any("Captioning" in d for d in descriptions)
+        assert any("done" in d.lower() for d in descriptions)
+
+    @respx.mock
+    async def test_emits_router_decision(
+        self, cache_db_path, multimodal_msg, text_msg, make_image
+    ):
+        u, h = make_image(); c = CaptionCache(cache_db_path)
+        await c.init(); await c.put(h, "cap", "qwen3-vl-8b")
+        respx.post("http://vllm/v1/chat/completions").respond(
+            200, json={"choices": [{"message": {
+                "content": '{"need_images": false, "reason": "topic"}'
+            }}]},
+        )
+        events = []
+        async def emit(ev): events.append(ev)
+        f = Filter()
+        f.valves = Filter.Valves(vllm_base_url="http://vllm/v1", cache_db_path=cache_db_path)
+        body = {"messages": [
+            multimodal_msg("a", [u]),
+            text_msg("y", role="assistant"),
+            text_msg("decorators?"),
+        ]}
+        await f.inlet(
+            body=body, __user__={"id": "u"}, __metadata__={"chat_id": "c"},
+            __event_emitter__=emit,
+        )
+        descriptions = [e["data"]["description"] for e in events]
+        assert any("Routing" in d for d in descriptions)
+        assert any("drop" in d for d in descriptions)
+
+    async def test_show_live_status_false_emits_nothing(
+        self, cache_db_path, multimodal_msg, make_image
+    ):
+        u, _ = make_image()
+        events = []
+        async def emit(ev): events.append(ev)
+        f = Filter()
+        f.valves = Filter.Valves(cache_db_path=cache_db_path)
+        body = {"messages": [multimodal_msg("a", [u])]}
+        # No respx mock → caption call would fail; but show_live_status disabled so
+        # status events should be absent regardless of HTTP outcome.
+        uv = Filter.UserValves(show_live_status=False, show_thinking_log=False)
+        await f.inlet(
+            body=body, __user__={"id": "u", "valves": uv},
+            __metadata__={"chat_id": "c"},
+            __event_emitter__=emit,
+        )
+        assert events == []

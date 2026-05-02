@@ -453,6 +453,17 @@ class Filter:
             await self._cache.init()
         return self._cache
 
+    async def _emit_status(self, emit, description: str, *, done: bool = False,
+                           hidden: bool = False, allowed: bool = True) -> None:
+        if not (emit and allowed):
+            return
+        try:
+            await emit({"type": "status", "data": {
+                "description": description, "done": done, "hidden": hidden,
+            }})
+        except Exception as e:
+            log.debug("status emit failed: %s", e)
+
     async def inlet(self, body: dict, __user__: Optional[dict] = None,
                     __metadata__: Optional[dict] = None,
                     __event_emitter__=None) -> dict:
@@ -479,23 +490,30 @@ class Filter:
         if last is None:
             return body
 
-        # Step A: scan
         url_list = list(iter_image_parts(msgs))
         if not url_list:
             return body
 
         cache = await self._ensure_cache()
 
-        # Step B: hash + ensure captions
         scanned: list[tuple[int, int, str, str, bytes]] = []
         for msg_idx, c_idx, url in url_list:
             try:
-                h, raw = await hash_image_url(
-                    url, self.valves.webui_internal_base,
-                )
+                h, raw = await hash_image_url(url, self.valves.webui_internal_base)
                 scanned.append((msg_idx, c_idx, url, h, raw))
             except Exception as e:
                 log.warning("hash skipped url=%s err=%s", url[:60], e)
+
+        # Decide what captions are missing (for status messaging)
+        existing = await cache.get_many([h for *_, h, _ in scanned])
+        misses = [s for s in scanned if s[3] not in existing]
+
+        if misses:
+            await self._emit_status(
+                __event_emitter__,
+                f"🖼️ Captioning {len(misses)} new image(s)...",
+                allowed=user_valves.show_live_status,
+            )
 
         captions_by_url = await ensure_captions(
             scanned=scanned,
@@ -508,23 +526,32 @@ class Filter:
             user_id=(__user__ or {}).get("id"),
         )
 
-        # Step C: classify
         if user_valves.force_keep_all_images:
+            await self._emit_status(
+                __event_emitter__,
+                "✅ Compressor done (force_keep_all_images)",
+                done=True, allowed=user_valves.show_live_status,
+            )
             return body
 
         if has_images(last):
-            keep_idx = len(msgs) - 1
+            keep_idx: Optional[int] = len(msgs) - 1
+            decision_label = "kept new upload"
         else:
             latest_idx = find_latest_image_turn(msgs)
             if latest_idx is None:
                 return body
+            await self._emit_status(
+                __event_emitter__,
+                "🧭 Routing: do we need pixels for this question?",
+                allowed=user_valves.show_live_status,
+            )
             captions_for_router = [
                 captions_by_url.get(url, "(no caption)")
                 for (mi, _, url, _, _) in scanned if mi == latest_idx
             ]
             decision, _reason = await route(
-                user_text=text_of(last),
-                captions=captions_for_router,
+                user_text=text_of(last), captions=captions_for_router,
                 base_url=self.valves.vllm_base_url,
                 api_key=self.valves.vllm_api_key,
                 model=self.valves.router_model,
@@ -532,8 +559,20 @@ class Filter:
                 timeout_s=self.valves.router_timeout_s,
                 failopen_keep=self.valves.router_failopen_keep,
             )
-            keep_idx = latest_idx if decision else None
+            if decision:
+                keep_idx = latest_idx
+                decision_label = "🎯 Router: keep images"
+            else:
+                keep_idx = None
+                decision_label = "🎯 Router: drop images"
+            await self._emit_status(
+                __event_emitter__, decision_label,
+                allowed=user_valves.show_live_status,
+            )
 
-        # Step D: rewrite
         body["messages"] = rewrite_messages(msgs, keep_idx, captions_by_url)
+        await self._emit_status(
+            __event_emitter__, "✅ Compressor done",
+            done=True, allowed=user_valves.show_live_status,
+        )
         return body
