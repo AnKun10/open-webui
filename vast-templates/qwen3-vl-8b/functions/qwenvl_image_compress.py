@@ -349,3 +349,72 @@ async def route(user_text: str,
     except (httpx.HTTPError, _json.JSONDecodeError, KeyError, ValueError) as e:
         log.warning("router call failed: %s; failopen_keep=%s", e, failopen_keep)
         return failopen_keep, f"router failure: {type(e).__name__}"
+
+
+async def ensure_captions(scanned: list[tuple[int, int, str, str, bytes]],
+                          cache: CaptionCache,
+                          base_url: str,
+                          api_key: str,
+                          model: str,
+                          max_tokens: int,
+                          timeout_s: int,
+                          user_id: Optional[str]) -> dict[str, str]:
+    """Ensure all scanned images have captions, either from cache or fresh.
+
+    Args:
+        scanned: List of (msg_idx, content_idx, url, hash, raw_bytes).
+        cache: CaptionCache instance (already initialized).
+        base_url: vLLM base URL (e.g., "http://vllm/v1").
+        api_key: Authorization bearer token.
+        model: Model name (e.g., "qwen3-vl-8b").
+        max_tokens: Max response tokens for caption calls.
+        timeout_s: HTTP request timeout in seconds.
+        user_id: Optional user ID to record with new captions.
+
+    Returns:
+        {url: caption} for every successfully captioned image.
+        On caption failure, the url is OMITTED from the result.
+    """
+    if not scanned:
+        return {}
+
+    # Gather all hashes and check cache
+    hashes = [h for _, _, _, h, _ in scanned]
+    hits = await cache.get_many(hashes)
+
+    out: dict[str, str] = {}
+    misses: list[tuple[str, str, bytes]] = []
+
+    for _, _, url, h, raw in scanned:
+        if h in hits:
+            out[url] = hits[h]
+        else:
+            misses.append((url, h, raw))
+
+    # If all cache hits, return early
+    if not misses:
+        return out
+
+    # Caption all misses in parallel
+    async def _one(url: str) -> tuple[str, Optional[str]]:
+        try:
+            cap = await caption_one(url, base_url, api_key, model, max_tokens, timeout_s)
+            return url, cap or None
+        except Exception as e:
+            log.warning("caption failed for url=%s err=%s", url[:60], e)
+            return url, None
+
+    results = await asyncio.gather(*(_one(url) for url, _, _ in misses))
+
+    # Collect successful captions and prepare batch write
+    new_rows: list[tuple[str, str, str, Optional[int], Optional[str]]] = []
+    for (url, h, raw), (url2, cap) in zip(misses, results):
+        if cap:
+            out[url] = cap
+            new_rows.append((h, cap, model, len(raw), user_id))
+
+    # Batch write new captions to cache
+    if new_rows:
+        await cache.put_many(new_rows)
+
+    return out

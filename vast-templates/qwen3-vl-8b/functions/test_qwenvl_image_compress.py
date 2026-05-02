@@ -13,6 +13,7 @@ from qwenvl_image_compress import (
     hash_image_url,
     caption_one,
     route,
+    ensure_captions,
     CAPTION_SYSTEM_PROMPT,
     ROUTER_SYSTEM_PROMPT,
 )
@@ -411,3 +412,57 @@ class TestRoute:
         assert "1. c1" in user_content
         assert "2. c2" in user_content
         assert "u msg" in user_content
+
+
+class TestEnsureCaptions:
+    @respx.mock
+    async def test_all_cache_hits_no_http(self, cache_db_path, make_image):
+        c = CaptionCache(cache_db_path); await c.init()
+        u1, h1 = make_image(b"a"); u2, h2 = make_image(b"b")
+        await c.put(h1, "cap A", "qwen3-vl-8b")
+        await c.put(h2, "cap B", "qwen3-vl-8b")
+
+        # respx with no routes; any HTTP call would raise.
+        result = await ensure_captions(
+            scanned=[(0, 1, u1, h1, b"a"), (0, 2, u2, h2, b"b")],
+            cache=c,
+            base_url="http://vllm/v1",
+            api_key="sk",
+            model="qwen3-vl-8b",
+            max_tokens=80,
+            timeout_s=10,
+            user_id=None,
+        )
+        assert result == {u1: "cap A", u2: "cap B"}
+
+    @respx.mock
+    async def test_misses_trigger_caption_calls(self, cache_db_path, make_image):
+        c = CaptionCache(cache_db_path); await c.init()
+        u, h = make_image(b"new")
+        respx.post("http://vllm/v1/chat/completions").respond(
+            200, json={"choices": [{"message": {"content": "fresh caption"}}]},
+        )
+        result = await ensure_captions(
+            scanned=[(0, 1, u, h, b"new")],
+            cache=c,
+            base_url="http://vllm/v1", api_key="sk", model="qwen3-vl-8b",
+            max_tokens=80, timeout_s=10, user_id="u1",
+        )
+        assert result == {u: "fresh caption"}
+        # cache populated
+        assert await c.get(h) == "fresh caption"
+
+    @respx.mock
+    async def test_caption_failure_skips_url(self, cache_db_path, make_image):
+        c = CaptionCache(cache_db_path); await c.init()
+        u_ok, h_ok = make_image(b"ok"); u_bad, h_bad = make_image(b"bad")
+        await c.put(h_ok, "ok caption", "qwen3-vl-8b")
+        respx.post("http://vllm/v1/chat/completions").respond(503)
+        result = await ensure_captions(
+            scanned=[(0, 1, u_ok, h_ok, b"ok"), (0, 2, u_bad, h_bad, b"bad")],
+            cache=c,
+            base_url="http://vllm/v1", api_key="sk", model="qwen3-vl-8b",
+            max_tokens=80, timeout_s=10, user_id=None,
+        )
+        assert result.get(u_ok) == "ok caption"
+        assert u_bad not in result   # failure → url omitted
