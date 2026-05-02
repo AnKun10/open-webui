@@ -1,4 +1,5 @@
 import base64
+import copy
 import hashlib
 import pytest
 import respx
@@ -595,3 +596,46 @@ class TestInletTextFollowup:
         # Caption substituted into text
         text = next(p["text"] for p in first["content"] if p["type"] == "text")
         assert "a screenshot" in text
+
+
+class TestInletUserValves:
+    async def test_disabled_user_returns_body_unchanged(
+        self, cache_db_path, multimodal_msg, make_image
+    ):
+        u, _ = make_image()
+        f = Filter()
+        f.valves = Filter.Valves(cache_db_path=cache_db_path)
+        body = {"messages": [
+            multimodal_msg("a", [u]),
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "next"},
+        ]}
+        before = copy.deepcopy(body)
+        uv = Filter.UserValves(enabled=False)
+        out = await f.inlet(
+            body=body, __user__={"id": "u", "valves": uv}, __metadata__={},
+        )
+        assert out == before  # no mutation
+
+    @respx.mock
+    async def test_force_keep_all_images_skips_router(
+        self, cache_db_path, multimodal_msg, text_msg, make_image
+    ):
+        u, h = make_image(b"x")
+        c = CaptionCache(cache_db_path); await c.init()
+        await c.put(h, "cap", "qwen3-vl-8b")
+        # No respx routes — any HTTP call would explode.
+        f = Filter()
+        f.valves = Filter.Valves(vllm_base_url="http://vllm/v1", cache_db_path=cache_db_path)
+        body = {"messages": [
+            multimodal_msg("a", [u]),
+            text_msg("y", role="assistant"),
+            text_msg("explain decorators"),
+        ]}
+        uv = Filter.UserValves(force_keep_all_images=True)
+        out = await f.inlet(
+            body=body, __user__={"id": "u", "valves": uv}, __metadata__={},
+        )
+        # Image still present at turn 0 (no strip)
+        first = out["messages"][0]
+        assert any(p.get("type") == "image_url" for p in first["content"])
