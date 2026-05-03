@@ -53,15 +53,15 @@ the persistent secret/data layout.
 Open two SSH shells side by side:
 
 ```bash
-# Shell 1: image's vLLM bring-up
-tail -f /var/log/onstart.log
-# Or, once supervisor is up:
+# Shell 1: image's supervisord-managed vLLM service
 tail -f /var/log/supervisor/vllm.log
+# (path may vary by image version; check `supervisorctl status` to confirm)
 ```
 
 ```bash
 # Shell 2: our onstart (Open WebUI bring-up)
 tail -f /workspace/logs/onstart.log
+# (Vast also mirrors the same content to /var/log/onstart.log)
 ```
 
 Wait until both show their respective "ready" lines:
