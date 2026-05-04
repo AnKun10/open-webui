@@ -48,7 +48,7 @@ Paste each row as a Key/Value pair. Order does not matter.
 | `DATA_DIRECTORY` | `/workspace/` |
 | `PORTAL_CONFIG` | `localhost:1111:11111:/:Instance Portal\|localhost:7860:17860:/:vLLM UI\|localhost:8080:18080:/:Jupyter\|localhost:8265:18265:/:Ray Dashboard\|localhost:3000:13000:/:Open WebUI` |
 | `VLLM_MODEL` | `Qwen/Qwen3-VL-8B-Instruct` |
-| `VLLM_ARGS` | `--max-model-len 32768 --gpu-memory-utilization 0.90 --trust-remote-code --dtype float16 --served-model-name qwen3-vl-8b --download-dir /workspace/.hf_cache` |
+| `VLLM_ARGS` | `--max-model-len 32768 --gpu-memory-utilization 0.90 --trust-remote-code --dtype float16 --served-model-name qwen3-vl-8b --enforce-eager --download-dir /workspace/.hf_cache` |
 | `AUTO_PARALLEL` | `false` |
 | `HF_HOME` | `/workspace/.hf_cache` |
 | `OPENWEBUI_ENABLE` | `true` |
@@ -61,6 +61,16 @@ Paste each row as a Key/Value pair. Order does not matter.
 > this flag and the engine will fail to initialise. The image's earlier
 > templates carried this flag from a vLLM 0.19-era config; it is not needed
 > for Qwen3-VL on 0.20 and was removed during testing on 2026-05-04.
+
+> **`--enforce-eager` IS required for Qwen3-VL multimodal on vLLM 0.20.**
+> Without it, vLLM's CUDA graph captures a fixed-size deepstack buffer (~82
+> tokens) at compile time. Real images often produce more deepstack tokens
+> (we observed 88 for a 64×64 test PNG) → engine crashes with
+> `ValueError: Requested more deepstack tokens than available in buffer` at
+> `qwen3_vl.py:1711`. `--enforce-eager` disables CUDA graph compilation so
+> the deepstack buffer is sized dynamically per request. Trade-off: ~10–20%
+> throughput penalty vs. CUDA graph mode, but the only known-working setup
+> for Qwen3-VL multimodal on this vLLM version.
 
 > **Note on `VLLM_ARGS` propagation:** `onstart.sh` launches vLLM with a
 > hardcoded set of flags (the same listed above). Setting `VLLM_ARGS` here

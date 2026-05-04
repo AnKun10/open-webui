@@ -43,6 +43,12 @@ fi
 if ! curl -sf -m 2 http://127.0.0.1:8000/health >/dev/null 2>&1; then
   if ! tmux has-session -t vllm 2>/dev/null; then
     echo "[2/3] vLLM not serving on :8000 — launching it under tmux..."
+    # NOTE: --enforce-eager is required for Qwen3-VL multimodal on vLLM 0.20.
+    # Without it, CUDA graph captures a fixed-size deepstack buffer (~82 tokens)
+    # at compile time. Real images often produce more deepstack tokens (e.g. 88)
+    # → engine crashes with `ValueError: Requested more deepstack tokens than
+    # available in buffer` at qwen3_vl.py:1711. --enforce-eager disables CUDA
+    # graph so the deepstack buffer is sized dynamically per request.
     tmux new -d -s vllm "\
       export HF_HOME=/workspace/.hf_cache; \
       vllm serve ${VLLM_MODEL:-Qwen/Qwen3-VL-8B-Instruct} \
@@ -52,6 +58,7 @@ if ! curl -sf -m 2 http://127.0.0.1:8000/health >/dev/null 2>&1; then
         --trust-remote-code \
         --dtype float16 \
         --served-model-name qwen3-vl-8b \
+        --enforce-eager \
         --download-dir /workspace/.hf_cache \
       2>&1 | tee /workspace/logs/vllm.log"
   else

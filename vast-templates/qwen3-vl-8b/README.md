@@ -174,6 +174,7 @@ without touching Open WebUI.
 |---|---|---|
 | Onstart hangs at `Waiting for vLLM /health` for >20 min | `tmux ls` + `tail -100 /workspace/logs/vllm.log` | vLLM tmux either crashed (bad flag, OOM) or is still downloading model weights (16 GB cold) |
 | `vllm.log` shows `unrecognized argument: --mm-encoder-attn-backend` | n/a | vLLM 0.20 dropped the flag — remove it from `VLLM_ARGS` env var **and** from `onstart.sh`'s hardcoded args block |
+| `vllm.log` shows `ValueError: Requested more deepstack tokens than available in buffer: num_tokens=NN > self.deepstack_input_embeds_num_tokens=82` on the first multimodal request, then engine dies with `EngineCore encountered an issue` for every subsequent request | n/a | Qwen3-VL on vLLM 0.20 needs `--enforce-eager` (CUDA graph captures deepstack buffer too small). Add it to `onstart.sh`'s hardcoded args + `VLLM_ARGS` env var, then `tmux kill-session -t vllm` and re-run onstart |
 | `vllm.log` shows `Engine core initialization failed` after second `APIServer pid=...` line | `ss -tlnp \| grep 8000` | A second vllm instance tried to bind `:8000` (e.g. you re-added `entrypoint.sh` to the end of onstart). Kill the duplicate; only one vllm should own port 8000 |
 | Open WebUI loads but no model in Admin → Models | `curl -sf http://127.0.0.1:8000/v1/models` | vLLM API not reachable; check the `vllm` tmux is alive (`tmux ls`) |
 | Filter not running on chat | `grep image_compress_inlet /workspace/logs/webui.log \| tail` | Filter not enabled on the model, or function disabled |
