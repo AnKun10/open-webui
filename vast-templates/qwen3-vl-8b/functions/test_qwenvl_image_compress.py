@@ -479,7 +479,10 @@ class TestFilterValves:
         assert f.valves.caption_model == "qwen3-vl-8b"
         assert f.valves.router_failopen_keep is True
         assert f.valves.priority == 5
-        assert f.toggle is True
+        # Deliberately not setting self.toggle — see comment in Filter.__init__.
+        # Open WebUI 0.9.2 gates filters with `toggle=True` behind a per-chat
+        # enable button which conflicts with `is_global=True` auto-apply.
+        assert not hasattr(f, "toggle")
 
     def test_user_valves_defaults(self):
         f = Filter()

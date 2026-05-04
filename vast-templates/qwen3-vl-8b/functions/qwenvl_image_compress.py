@@ -444,7 +444,13 @@ class Filter:
 
     def __init__(self) -> None:
         self.valves = self.Valves()
-        self.toggle = True
+        # NOTE: deliberately NOT setting `self.toggle = True`. In Open WebUI 0.9.2's
+        # `get_sorted_filter_ids`, `toggle=True` gates the filter behind a per-chat
+        # enable button (i.e. only fires when its id is in `enabled_filter_ids` for
+        # that chat). With `is_active=True` + `is_global=True`, the filter should
+        # auto-apply to every chat — the per-chat gate breaks that. Disable users
+        # can still flip via Admin → Functions → toggle, or per-user via the
+        # `UserValves.enabled` valve.
         self._cache: Optional[CaptionCache] = None
         self._cache_lock = asyncio.Lock()
 
