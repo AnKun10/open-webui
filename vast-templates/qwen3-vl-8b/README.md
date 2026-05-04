@@ -53,13 +53,12 @@ the persistent secret/data layout.
 Open two SSH shells side by side:
 
 ```bash
-# Shell 1: image's supervisord-managed vLLM service
-tail -f /var/log/supervisor/vllm.log
-# (path may vary by image version; check `supervisorctl status` to confirm)
+# Shell 1: vLLM service (started by onstart, NOT supervisord, see note below)
+tail -f /workspace/logs/vllm.log
 ```
 
 ```bash
-# Shell 2: our onstart (Open WebUI bring-up)
+# Shell 2: our onstart (full bring-up: secret, venv, vllm tmux, webui tmux)
 tail -f /workspace/logs/onstart.log
 # (Vast also mirrors the same content to /var/log/onstart.log)
 ```
@@ -71,6 +70,16 @@ Wait until both show their respective "ready" lines:
 Cold boot expected: 10-20 minutes (mostly Qwen3-VL weights download
 ~16 GB into `/workspace/.hf_cache`).
 Warm boot (subsequent restart): ~2 minutes (everything persists).
+
+> **Why `onstart.sh` launches vLLM directly (not via supervisord):** when this
+> template is created by cloning a vastai/pytorch-based template (the typical
+> path), Vast preserves the legacy `/.launch` boot mode, which **does not** run
+> the image's `boot_default.sh` chain. As a result the image's supervisord and
+> its `vllm.sh`/`ray.sh`/`caddy` services never start. Instead `onstart.sh`
+> starts vLLM itself under a `tmux` session named `vllm`. The script's
+> Step `[2/3]` short-circuits if a vLLM is already serving on `:8000` (so the
+> same script also works against the modern entrypoint mode if you ever
+> migrate the template). See `/workspace/logs/vllm.log` for the live log.
 
 ### 4. Verify Open WebUI
 
@@ -130,8 +139,17 @@ vLLM (already healthy), restarts the `webui` tmux session.
 ### Restart only vLLM
 
 ```bash
-supervisorctl restart vllm
+ssh -p <PORT> root@<HOST>
+tmux kill-session -t vllm
+bash /var/lib/vast/onstart.sh
 ```
+
+Onstart's idempotent vLLM block sees that nothing is on `:8000` and re-launches
+the `vllm` tmux session. The Open WebUI `webui` tmux session is also recreated
+by the same script (which is harmless — it just restarts the existing webui).
+
+If you migrate to the modern entrypoint mode in a future template (where the
+image's supervisord owns vLLM), use `supervisorctl restart vllm` instead.
 
 ### Inspect filter activity
 
@@ -154,11 +172,13 @@ without touching Open WebUI.
 
 | Symptom | Check | Likely cause |
 |---|---|---|
-| Onstart hangs at `Waiting for image-managed vLLM` for >15 min | `supervisorctl status vllm` and `/var/log/supervisor/vllm.err.log` | vLLM failed to load weights (OOM? bad VLLM_ARGS flag?) |
-| `vllm` service shows "BACKOFF" in supervisor | `tail -100 /var/log/supervisor/vllm.err.log` | Often `--mm-encoder-attn-backend TORCH_SDPA` not recognized in vLLM 0.20 → drop the flag from `VLLM_ARGS` and restart |
-| Open WebUI loads but no model in Admin → Models | `curl -sf http://127.0.0.1:8000/v1/models` | vLLM API not reachable from container |
+| Onstart hangs at `Waiting for vLLM /health` for >20 min | `tmux ls` + `tail -100 /workspace/logs/vllm.log` | vLLM tmux either crashed (bad flag, OOM) or is still downloading model weights (16 GB cold) |
+| `vllm.log` shows `unrecognized argument: --mm-encoder-attn-backend` | n/a | vLLM 0.20 dropped the flag — remove it from `VLLM_ARGS` env var **and** from `onstart.sh`'s hardcoded args block |
+| `vllm.log` shows `Engine core initialization failed` after second `APIServer pid=...` line | `ss -tlnp \| grep 8000` | A second vllm instance tried to bind `:8000` (e.g. you re-added `entrypoint.sh` to the end of onstart). Kill the duplicate; only one vllm should own port 8000 |
+| Open WebUI loads but no model in Admin → Models | `curl -sf http://127.0.0.1:8000/v1/models` | vLLM API not reachable; check the `vllm` tmux is alive (`tmux ls`) |
 | Filter not running on chat | `grep image_compress_inlet /workspace/logs/webui.log \| tail` | Filter not enabled on the model, or function disabled |
 | First chat 503s | `tail -f /workspace/logs/webui.log` | vLLM weights still loading (cold boot); wait 1-2 min |
 | Captions cache empty after several chats | `sqlite3 ... "SELECT count(*) FROM captions;"` | Filter may be disabled per-user (`UserValves.enabled=false`) or per-model (Models → qwen3-vl-8b → Filters unticked) |
 | Sessions die on restart | `cat /workspace/.webui-secret` | File missing → secret regenerated each boot → JWTs invalidated. Rerun onstart, the file should exist. |
 | `/workspace` lost after stop/start | Vast offer details | Storage type was ephemeral, not persistent. Use a different offer. |
+| Open WebUI fails to bind `:3000` with `address already in use` | `ss -tlnp \| grep 3000` | The image's `caddy` proxy (started when `entrypoint.sh` runs) is on `:3000`. Either remove `entrypoint.sh` from onstart, or change Open WebUI's `--port` to `13000` and let caddy reverse-proxy from `:3000` |

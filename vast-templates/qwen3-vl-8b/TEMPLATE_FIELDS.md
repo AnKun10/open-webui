@@ -48,13 +48,25 @@ Paste each row as a Key/Value pair. Order does not matter.
 | `DATA_DIRECTORY` | `/workspace/` |
 | `PORTAL_CONFIG` | `localhost:1111:11111:/:Instance Portal\|localhost:7860:17860:/:vLLM UI\|localhost:8080:18080:/:Jupyter\|localhost:8265:18265:/:Ray Dashboard\|localhost:3000:13000:/:Open WebUI` |
 | `VLLM_MODEL` | `Qwen/Qwen3-VL-8B-Instruct` |
-| `VLLM_ARGS` | `--max-model-len 32768 --gpu-memory-utilization 0.90 --trust-remote-code --dtype float16 --served-model-name qwen3-vl-8b --mm-encoder-attn-backend TORCH_SDPA --download-dir /workspace/.hf_cache` |
+| `VLLM_ARGS` | `--max-model-len 32768 --gpu-memory-utilization 0.90 --trust-remote-code --dtype float16 --served-model-name qwen3-vl-8b --download-dir /workspace/.hf_cache` |
 | `AUTO_PARALLEL` | `false` |
 | `HF_HOME` | `/workspace/.hf_cache` |
 | `OPENWEBUI_ENABLE` | `true` |
 
 > **Do not include `RAY_ADDRESS` or `RAY_ARGS`** — those are for multi-GPU
 > tensor parallel, which we explicitly disable via `AUTO_PARALLEL=false`.
+
+> **Do not include `--mm-encoder-attn-backend TORCH_SDPA` in `VLLM_ARGS`** —
+> vLLM 0.20 (shipped in `vastai/vllm:v0.20.0-cuda-13.0`) does not recognize
+> this flag and the engine will fail to initialise. The image's earlier
+> templates carried this flag from a vLLM 0.19-era config; it is not needed
+> for Qwen3-VL on 0.20 and was removed during testing on 2026-05-04.
+
+> **Note on `VLLM_ARGS` propagation:** `onstart.sh` launches vLLM with a
+> hardcoded set of flags (the same listed above). Setting `VLLM_ARGS` here
+> only matters if/when you switch the template to the modern entrypoint
+> mode (where the image's `supervisord` invokes `vllm serve $VLLM_MODEL
+> $VLLM_ARGS`). Keep it in sync as a future-compatible reference.
 
 ## 5. On-start Script
 
